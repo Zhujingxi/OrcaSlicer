@@ -9,6 +9,9 @@
 
 namespace Slic3r {
 
+// Global constant: Gap angle in degrees (0° = +X/right, 90° = +Y/up, 180° = -X/left, 270° = -Y/down)
+constexpr double GAP_ANGLE_DEGREES = 90.0;
+
 void FillConcentric::_fill_surface_single(
     const FillParams                &params, 
     unsigned int                     thickness_layers,
@@ -38,12 +41,57 @@ void FillConcentric::_fill_surface_single(
     // adhesion problems of the first central tiny loops
     loops = union_pt_chained_outside_in(loops);
     
-    // split paths using a nearest neighbor search
+    // Reverse loops to print from center (innermost) to outside (outermost)
+    std::reverse(loops.begin(), loops.end());
+    
+    // Calculate center of bounding box for gap alignment
+    Point center = bounding_box.center();
+    
+    // Convert global angle from degrees to radians and normalize to [-PI, PI]
+    double target_angle = GAP_ANGLE_DEGREES * M_PI / 180.0;
+    while (target_angle > M_PI) target_angle -= 2.0 * M_PI;
+    while (target_angle <= -M_PI) target_angle += 2.0 * M_PI;
+
+    // Calculate the average centroid of all loops to find a stable "consensus center"
+    Point average_center = bounding_box.center(); // Default to bbox center if no loops
+    if (!loops.empty()) {
+        Vec2d center_sum(0, 0);
+        size_t count = 0;
+        for (const Polygon &loop : loops) {
+            center_sum += loop.centroid().cast<double>();
+            count++;
+        }
+        if (count > 0) {
+            Vec2d avg = center_sum / double(count);
+            average_center = Point(avg.x(), avg.y());
+        }
+    }
+    
+    // Split paths at points aligned with the radial line from center at the specified angle
     size_t iPathFirst = polylines_out.size();
-    Point last_pos(0, 0);
     for (const Polygon &loop : loops) {
-        polylines_out.emplace_back(loop.split_at_index(last_pos.nearest_point_index(loop.points)));
-        last_pos = polylines_out.back().last_point();
+        // Use the average center of ALL loops. 
+        // This ensures straight gaps (fixed center) while being centrally balanced.
+        Point center = average_center;
+        
+        size_t best_idx = 0;
+        double best_diff = std::numeric_limits<double>::max();
+        
+        for (size_t i = 0; i < loop.points.size(); ++i) {
+            double dx = loop.points[i].x() - center.x();
+            double dy = loop.points[i].y() - center.y();
+            
+            double angle = std::atan2(dy, dx);
+            double diff = std::abs(angle - target_angle);
+            if (diff > M_PI) diff = 2.0 * M_PI - diff;
+            
+            if (diff < best_diff) {
+                best_diff = diff;
+                best_idx = i;
+            }
+        }
+        
+        polylines_out.emplace_back(loop.split_at_index(best_idx));
     }
 
     // clip the paths to prevent the extruder from getting exactly on the first point of the loop
@@ -101,18 +149,67 @@ void FillConcentric::_fill_surface_single(const FillParams& params,
                 all_extrusions.emplace_back(&wall);
         }
 
-        // Split paths using a nearest neighbor search.
+        // Reverse extrusions to print from center (innermost) to outside (outermost)
+        std::reverse(all_extrusions.begin(), all_extrusions.end());
+        
+        // Calculate center of bounding box for gap alignment
+        Point center = expolygon.contour.bounding_box().center();
+        
+        // Convert global angle from degrees to radians and normalize to [-PI, PI]
+        double target_angle = GAP_ANGLE_DEGREES * M_PI / 180.0;
+        while (target_angle > M_PI) target_angle -= 2.0 * M_PI;
+        while (target_angle <= -M_PI) target_angle += 2.0 * M_PI;
+
+        // Calculate the average centroid of all Arachne loops
+        Point average_center = expolygon.contour.bounding_box().center(); // Default
+        if (!all_extrusions.empty()) {
+            Vec2d center_sum(0, 0);
+            size_t count = 0;
+            for (const Arachne::ExtrusionLine* extrusion : all_extrusions) {
+                if (extrusion->empty() || !extrusion->is_closed) continue;
+                // Convert to Polygon for stable centroid
+                ThickPolyline tp = Arachne::to_thick_polyline(*extrusion);
+                Polygon poly(tp.points);
+                center_sum += poly.centroid().cast<double>();
+                count++;
+            }
+            if (count > 0) {
+                Vec2d avg = center_sum / double(count);
+                average_center = Point(avg.x(), avg.y());
+            }
+        }
+        
+        // Split paths at points aligned with the radial line from center at the specified angle
         size_t firts_poly_idx = thick_polylines_out.size();
-        Point  last_pos(0, 0);
         for (const Arachne::ExtrusionLine* extrusion : all_extrusions) {
             if (extrusion->empty())
                 continue;
 
             ThickPolyline thick_polyline = Arachne::to_thick_polyline(*extrusion);
-            if (extrusion->is_closed)
-                thick_polyline.start_at_index(last_pos.nearest_point_index(thick_polyline.points));
+            if (extrusion->is_closed) {
+                // Use the average center of ALL loops to ensure straight gaps.
+                Point center = average_center;
+
+                // Find the point closest to the target angle
+                size_t best_idx = 0;
+                double best_diff = std::numeric_limits<double>::max();
+                
+                for (size_t i = 0; i < thick_polyline.points.size(); ++i) {
+                    double dx = thick_polyline.points[i].x() - center.x();
+                    double dy = thick_polyline.points[i].y() - center.y();
+                    
+                    double angle = std::atan2(dy, dx);
+                    double diff = std::abs(angle - target_angle);
+                    if (diff > M_PI) diff = 2.0 * M_PI - diff;
+                    
+                    if (diff < best_diff) {
+                        best_diff = diff;
+                        best_idx = i;
+                    }
+                }
+                thick_polyline.start_at_index(best_idx);
+            }
             thick_polylines_out.emplace_back(std::move(thick_polyline));
-            last_pos = thick_polylines_out.back().last_point();
         }
 
         // clip the paths to prevent the extruder from getting exactly on the first point of the loop
@@ -129,7 +226,7 @@ void FillConcentric::_fill_surface_single(const FillParams& params,
         if (j < thick_polylines_out.size())
             thick_polylines_out.erase(thick_polylines_out.begin() + int(j), thick_polylines_out.end());
 
-        reorder_by_shortest_traverse(thick_polylines_out);
+        // Note: removed reorder_by_shortest_traverse() to preserve center-to-outside order
     }
     else {
         Polylines polylines;
