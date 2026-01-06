@@ -1036,6 +1036,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool, detect_thin_wall))
     ((ConfigOptionFloatOrPercent, top_surface_line_width))
     ((ConfigOptionInt, top_shell_layers))
+    ((ConfigOptionFloat, concentric_gap_angle))
     ((ConfigOptionFloat, top_shell_thickness))
     ((ConfigOptionFloat, top_surface_speed))
     //BBS

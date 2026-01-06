@@ -10,8 +10,7 @@
 
 namespace Slic3r {
 
-// Global constant: Gap angle in degrees (0° = +X/right, 90° = +Y/up, 180° = -X/left, 270° = -Y/down)
-constexpr double GAP_ANGLE_DEGREES = 90.0;
+// Gap angle is now read from params.config->concentric_gap_angle
 
 // Helper to find the closest intersection of a ray from center with the loop segments
 // The ray starts at center and extends in the direction of the angle.
@@ -102,8 +101,9 @@ void FillConcentric::_fill_surface_single(
     // Calculate center of bounding box for gap alignment
     Point center = bounding_box.center();
     
-    // Convert global angle from degrees to radians and normalize to [-PI, PI]
-    double target_angle = GAP_ANGLE_DEGREES * M_PI / 180.0;
+    // Convert config angle from degrees to radians and normalize to [-PI, PI]
+    double gap_angle_degrees = params.config ? params.config->concentric_gap_angle.value : 90.0;
+    double target_angle = gap_angle_degrees * M_PI / 180.0;
     while (target_angle > M_PI) target_angle -= 2.0 * M_PI;
     while (target_angle <= -M_PI) target_angle += 2.0 * M_PI;
 
@@ -221,8 +221,9 @@ void FillConcentric::_fill_surface_single(const FillParams& params,
         // Calculate center of bounding box for gap alignment
         Point center = expolygon.contour.bounding_box().center();
         
-        // Convert global angle from degrees to radians and normalize to [-PI, PI]
-        double target_angle = GAP_ANGLE_DEGREES * M_PI / 180.0;
+        // Convert config angle from degrees to radians and normalize to [-PI, PI]
+        double gap_angle_degrees = params.config ? params.config->concentric_gap_angle.value : 90.0;
+        double target_angle = gap_angle_degrees * M_PI / 180.0;
         while (target_angle > M_PI) target_angle -= 2.0 * M_PI;
         while (target_angle <= -M_PI) target_angle += 2.0 * M_PI;
 

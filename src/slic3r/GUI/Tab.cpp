@@ -2233,6 +2233,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("bottom_shell_thickness", "strength_settings_top_bottom_shells#shell-thickness");
         optgroup->append_single_option_line("bottom_surface_density", "strength_settings_top_bottom_shells#surface-density");
         optgroup->append_single_option_line("bottom_surface_pattern", "strength_settings_top_bottom_shells#surface-pattern");
+        optgroup->append_single_option_line("concentric_gap_angle", "strength_settings_top_bottom_shells#concentric-gap-angle");
         optgroup->append_single_option_line("top_bottom_infill_wall_overlap", "strength_settings_top_bottom_shells#infillwall-overlap");
 
         optgroup = page->new_optgroup(L("Infill"), L"param_infill");
@@ -2538,6 +2539,10 @@ optgroup->append_single_option_line("skirt_loops", "others_settings_skirt#loops"
 // Reload current config (aka presets->edited_preset->config) into the UI fields.
 void TabPrint::reload_config()
 {
+    // Ensure "concentric_gap_angle" is set to avoid crash when loading presets created before this option was added.
+    if (!m_config->has("concentric_gap_angle"))
+        m_config->set_key_value("concentric_gap_angle", new ConfigOptionFloat(90.0));
+
     this->compatible_widget_reload(m_compatible_printers);
     Tab::reload_config();
 }

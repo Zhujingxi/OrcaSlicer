@@ -5547,6 +5547,17 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->set_default_value(new ConfigOptionFloat(0.6));
 
+    def = this->add("concentric_gap_angle", coFloat);
+    def->label = L("Concentric gap angle");
+    def->category = L("Strength");
+    def->tooltip = L("The angle at which the gap in concentric infill patterns is placed, relative to the center. "
+                     "0° points to the right (+X), 90° points up (+Y), etc.");
+    def->sidetext = "°";
+    def->min = 0;
+    def->max = 360;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(90.0));
+
     def = this->add("top_surface_density", coPercent);
     def->label = L("Top surface density");
     def->category = L("Strength");
