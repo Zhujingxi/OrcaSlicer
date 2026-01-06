@@ -6,11 +6,66 @@
 
 #include "FillConcentric.hpp"
 #include <libslic3r/ShortestPath.hpp>
+#include "../Geometry.hpp"
 
 namespace Slic3r {
 
 // Global constant: Gap angle in degrees (0° = +X/right, 90° = +Y/up, 180° = -X/left, 270° = -Y/down)
 constexpr double GAP_ANGLE_DEGREES = 90.0;
+
+// Helper to find the closest intersection of a ray from center with the loop segments
+// The ray starts at center and extends in the direction of the angle.
+static bool find_intersection_aligned_with_angle(
+    const Points& points, 
+    bool is_closed_polygon, // true if implicit close (Polygon), false if explicit (Polyline with start==end)
+    const Point& center, 
+    double angle, 
+    size_t& out_idx, 
+    Point& out_point
+) {
+    Vec2d dir(std::cos(angle), std::sin(angle));
+    Vec2d c = center.cast<double>();
+    
+    double min_dist2 = std::numeric_limits<double>::max();
+    bool found = false;
+    
+    size_t count = points.size();
+    // For closed polygons, there's an implicit segment from last to first.
+    // For explicitly closed polylines (start==end), skip the last point.
+    size_t segments = is_closed_polygon ? count : (count > 1 ? count - 1 : 0);
+    
+    for (size_t i = 0; i < segments; ++i) {
+        Vec2d p1 = points[i].cast<double>();
+        Vec2d p2 = points[(i + 1) % count].cast<double>();
+        
+        Vec2d seg_dir = p2 - p1;
+        
+        // Solve for intersection: c + t * dir = p1 + s * seg_dir
+        // This is a 2x2 linear system.
+        double denom = dir.x() * seg_dir.y() - dir.y() * seg_dir.x();
+        if (std::abs(denom) < EPSILON) 
+            continue; // Parallel or collinear
+        
+        Vec2d diff = p1 - c;
+        double t = (diff.x() * seg_dir.y() - diff.y() * seg_dir.x()) / denom;
+        double s = (diff.x() * dir.y() - diff.y() * dir.x()) / denom;
+        
+        // t >= 0: intersection is in the positive direction of the ray
+        // 0 <= s <= 1: intersection is within the segment
+        if (t >= 0 && s >= 0 && s <= 1.0) {
+            Vec2d intersection = c + t * dir;
+            double d2 = t * t; // Distance squared along ray (proportional)
+            if (d2 < min_dist2) {
+                min_dist2 = d2;
+                out_idx = i;
+                out_point = Point(coord_t(intersection.x()), coord_t(intersection.y()));
+                found = true;
+            }
+        }
+    }
+    return found;
+}
+
 
 void FillConcentric::_fill_surface_single(
     const FillParams                &params, 
@@ -68,30 +123,41 @@ void FillConcentric::_fill_surface_single(
     }
     
     // Split paths at points aligned with the radial line from center at the specified angle
+    // Split paths at points aligned with the radial line from center at the specified angle
     size_t iPathFirst = polylines_out.size();
-    for (const Polygon &loop : loops) {
+    for (Polygon &loop : loops) {
         // Use the average center of ALL loops. 
         // This ensures straight gaps (fixed center) while being centrally balanced.
         Point center = average_center;
         
-        size_t best_idx = 0;
-        double best_diff = std::numeric_limits<double>::max();
-        
-        for (size_t i = 0; i < loop.points.size(); ++i) {
-            double dx = loop.points[i].x() - center.x();
-            double dy = loop.points[i].y() - center.y();
+        size_t split_idx = 0;
+        Point intersection;
+        bool found = find_intersection_aligned_with_angle(loop.points, true, center, target_angle, split_idx, intersection);
+
+        if (found) {
+            // Insert the intersection point and split there
+            loop.points.insert(loop.points.begin() + split_idx + 1, intersection);
+            polylines_out.emplace_back(loop.split_at_index(split_idx + 1));
+        } else {
+            // Fallback to nearest vertex
+            size_t best_idx = 0;
+            double best_diff = std::numeric_limits<double>::max();
             
-            double angle = std::atan2(dy, dx);
-            double diff = std::abs(angle - target_angle);
-            if (diff > M_PI) diff = 2.0 * M_PI - diff;
-            
-            if (diff < best_diff) {
-                best_diff = diff;
-                best_idx = i;
+            for (size_t i = 0; i < loop.points.size(); ++i) {
+                double dx = loop.points[i].x() - center.x();
+                double dy = loop.points[i].y() - center.y();
+                
+                double angle = std::atan2(dy, dx);
+                double diff = std::abs(angle - target_angle);
+                if (diff > M_PI) diff = 2.0 * M_PI - diff;
+                
+                if (diff < best_diff) {
+                    best_diff = diff;
+                    best_idx = i;
+                }
             }
+            polylines_out.emplace_back(loop.split_at_index(best_idx));
         }
-        
-        polylines_out.emplace_back(loop.split_at_index(best_idx));
     }
 
     // clip the paths to prevent the extruder from getting exactly on the first point of the loop
@@ -190,24 +256,59 @@ void FillConcentric::_fill_surface_single(const FillParams& params,
                 // Use the average center of ALL loops to ensure straight gaps.
                 Point center = average_center;
 
-                // Find the point closest to the target angle
-                size_t best_idx = 0;
-                double best_diff = std::numeric_limits<double>::max();
-                
-                for (size_t i = 0; i < thick_polyline.points.size(); ++i) {
-                    double dx = thick_polyline.points[i].x() - center.x();
-                    double dy = thick_polyline.points[i].y() - center.y();
+                size_t split_idx = 0;
+                Point intersection;
+                // Note: ThickPolyline points form a closed loop (start==end) if is_closed is true.
+                // find_intersection expects false for is_closed_polygon if it's explicitly closed (Polyline).
+                bool found = find_intersection_aligned_with_angle(thick_polyline.points, false, center, target_angle, split_idx, intersection);
+
+                if (found) {
+                    // Interpolate width
+                    double w_start = thick_polyline.width[2 * split_idx];
+                    double w_end   = thick_polyline.width[2 * split_idx + 1];
                     
-                    double angle = std::atan2(dy, dx);
-                    double diff = std::abs(angle - target_angle);
-                    if (diff > M_PI) diff = 2.0 * M_PI - diff;
+                    const Point& p1 = thick_polyline.points[split_idx];
+                    const Point& p2 = thick_polyline.points[split_idx + 1];
+                    double total_len = (p2 - p1).cast<double>().norm();
+                    double part_len  = (intersection - p1).cast<double>().norm();
+                    double t = (total_len > EPSILON) ? part_len / total_len : 0.0;
                     
-                    if (diff < best_diff) {
-                        best_diff = diff;
-                        best_idx = i;
+                    double w_interp = w_start + t * (w_end - w_start);
+                    
+                    // Modify widths: replace [2*i, 2*i+1] with [2*i, w_interp] and [w_interp, 2*i+1]
+                    // Actually, we insert two new entries.
+                    // Original segment i: w[2*i] -> w[2*i+1]
+                    // New segment i: w[2*i] -> w_interp
+                    // New segment i+1: w_interp -> w[2*i+1]
+                    
+                    thick_polyline.width[2 * split_idx + 1] = w_interp;
+                    thick_polyline.width.insert(thick_polyline.width.begin() + 2 * split_idx + 2, w_interp);
+                    thick_polyline.width.insert(thick_polyline.width.begin() + 2 * split_idx + 3, w_end); 
+                    
+                    // Insert point
+                    thick_polyline.points.insert(thick_polyline.points.begin() + split_idx + 1, intersection);
+                    
+                    thick_polyline.start_at_index(split_idx + 1);
+                } else {
+                    // Fallback to nearest vertex
+                    size_t best_idx = 0;
+                    double best_diff = std::numeric_limits<double>::max();
+                    
+                    for (size_t i = 0; i < thick_polyline.points.size(); ++i) {
+                        double dx = thick_polyline.points[i].x() - center.x();
+                        double dy = thick_polyline.points[i].y() - center.y();
+                        
+                        double angle = std::atan2(dy, dx);
+                        double diff = std::abs(angle - target_angle);
+                        if (diff > M_PI) diff = 2.0 * M_PI - diff;
+                        
+                        if (diff < best_diff) {
+                            best_diff = diff;
+                            best_idx = i;
+                        }
                     }
+                    thick_polyline.start_at_index(best_idx);
                 }
-                thick_polyline.start_at_index(best_idx);
             }
             thick_polylines_out.emplace_back(std::move(thick_polyline));
         }
