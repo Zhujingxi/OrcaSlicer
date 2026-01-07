@@ -254,6 +254,13 @@ void FillConcentric::_fill_surface_single(const FillParams& params,
 
             ThickPolyline thick_polyline = Arachne::to_thick_polyline(*extrusion);
             if (extrusion->is_closed) {
+                // Arachne ExtrusionLine may be implicitly closed, but ThickPolyline requires explicit closure for start_at_index.
+                if (!thick_polyline.points.empty() && thick_polyline.points.front() != thick_polyline.points.back()) {
+                    thick_polyline.points.push_back(thick_polyline.points.front());
+                    thick_polyline.width.push_back(thick_polyline.width.back());
+                    thick_polyline.width.push_back(thick_polyline.width.front());
+                }
+
                 // Use the average center of ALL loops to ensure straight gaps.
                 Point center = average_center;
 
