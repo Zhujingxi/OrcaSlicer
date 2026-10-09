@@ -3,6 +3,8 @@
 #include "GCodeWriter.hpp"
 #include "Polygon.hpp"
 #include "PrintConfig.hpp"
+#include "RotaryColor.hpp"
+#include "Preset.hpp"
 #include "libslic3r.h"
 #include "I18N.hpp"
 #include "GCode.hpp"
@@ -2427,6 +2429,9 @@ WipeTowerType GCode::wipe_tower_type()
 
 void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
 {
+    m_rotary_started = false;
+    if (const auto error = validate_rotary_color_config(print->config()); !error.empty())
+        throw SlicingError(error);
     PROFILE_CLEAR();
 
     // BBS
@@ -3247,6 +3252,10 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
 
 
     }
+    if (m_config.rotary_color_enabled.value) {
+        initial_extruder_id = unsigned(m_config.rotary_color_filament.value - 1);
+        initial_non_support_extruder_id = initial_extruder_id;
+    }
     if (initial_extruder_id == (unsigned int)-1) {
         // Nothing to print!
         initial_extruder_id = 0;
@@ -3294,8 +3303,9 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     match_physical_extruder_for_each_filament(first_filaments, m_config);
     this->placeholder_parser().set("first_tools", new ConfigOptionInts(first_filaments));
     this->placeholder_parser().set("first_filaments", new ConfigOptionInts(first_filaments));
-    this->placeholder_parser().set("initial_tool", initial_extruder_id);
-    this->placeholder_parser().set("initial_extruder", initial_extruder_id);
+    const unsigned startup_tool = m_config.rotary_color_enabled.value ? unsigned(extruder_id) : initial_extruder_id;
+    this->placeholder_parser().set("initial_tool", startup_tool);
+    this->placeholder_parser().set("initial_extruder", startup_tool);
     //BBS
     match_physical_extruder_for_each_filament(first_non_support_filaments, m_config);
 
@@ -3310,13 +3320,14 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     this->placeholder_parser().set("first_non_support_tools", new ConfigOptionInts(first_non_support_filaments));
     this->placeholder_parser().set("first_non_support_filaments", new ConfigOptionInts(first_non_support_filaments));
     this->placeholder_parser().set("first_non_support_hotend", new ConfigOptionInts(first_non_support_hotends));
-    this->placeholder_parser().set("initial_no_support_tool", initial_non_support_extruder_id);
-    this->placeholder_parser().set("initial_no_support_extruder", initial_non_support_extruder_id);
+    const unsigned startup_no_support_tool = m_config.rotary_color_enabled.value ? startup_tool : initial_non_support_extruder_id;
+    this->placeholder_parser().set("initial_no_support_tool", startup_no_support_tool);
+    this->placeholder_parser().set("initial_no_support_extruder", startup_no_support_tool);
     // initial_no_support_hotend/current_hotend (see first_hotend_id_for_gcode_placeholder): multi-nozzle
     // H2C -> -1 (static; dynamic branch dormant), X2D -> -1, existing printers -> extruder id.
     this->placeholder_parser().set("initial_no_support_hotend",
         first_hotend_id_for_gcode_placeholder(m_config, group_result, (int) initial_non_support_extruder_id, (int) get_extruder_id(initial_non_support_extruder_id)));
-    this->placeholder_parser().set("current_extruder", initial_extruder_id);
+    this->placeholder_parser().set("current_extruder", startup_tool);
     this->placeholder_parser().set("current_hotend",
         first_hotend_id_for_gcode_placeholder(m_config, group_result, (int) initial_extruder_id, extruder_id));
     this->placeholder_parser().set("current_filament_id", (int) initial_extruder_id);
@@ -3380,14 +3391,17 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     this->placeholder_parser().set("wipe_tower_center_pos_y", new ConfigOptionFloat(wipe_tower_center.y()));
     this->placeholder_parser().set("wipe_tower_center_pos_valid", new ConfigOptionBool(wipe_tower_center_valid));
     this->placeholder_parser().set("has_single_extruder_multi_material_priming", wipe_tower_type == WipeTowerType::Type2 && has_wipe_tower && print.config().single_extruder_multi_material_priming);
-    this->placeholder_parser().set("total_toolchanges", DoExport::resolve_total_toolchanges(print.wipe_tower_data(), print.tool_ordering()));
+    this->placeholder_parser().set("total_toolchanges", m_config.rotary_color_enabled.value ? 0 : DoExport::resolve_total_toolchanges(print.wipe_tower_data(), print.tool_ordering()));
     this->placeholder_parser().set("num_extruders", int(print.config().nozzle_diameter.values.size()));
     this->placeholder_parser().set("retract_length", new ConfigOptionFloats(print.config().retraction_length));
 
     //Orca: support max MAXIMUM_EXTRUDER_NUMBER extruders/filaments
     std::vector<unsigned char> is_extruder_used(std::max(size_t(MAXIMUM_EXTRUDER_NUMBER), print.config().filament_diameter.size()), 0);
-    for (unsigned int extruder : tool_ordering.all_extruders())
-        is_extruder_used[extruder] = true;
+    if (m_config.rotary_color_enabled.value)
+        is_extruder_used[extruder_id] = true;
+    else
+        for (unsigned int extruder : tool_ordering.all_extruders())
+            is_extruder_used[extruder] = true;
     this->placeholder_parser().set("is_extruder_used", new ConfigOptionBools(is_extruder_used));
 
     {
@@ -4026,10 +4040,10 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         config.set_key_value("nozzle_diameter_at_nozzle_id", new ConfigOptionFloats(get_nozzle_diameters_by_nozzle_id(group_result.get())));
         config.set_key_value("nozzle_volume_types", new ConfigOptionStrings(get_nozzle_volume_types_by_nozzle_id(group_result.get())));
 
-        if (print.config().single_extruder_multi_material) {
+        if (print.config().single_extruder_multi_material || m_config.rotary_color_enabled.value) {
             // Process the filament_end_gcode for the active filament only.
-            int extruder_id = m_writer.filament()->id();
-            config.set_key_value("filament_extruder_id", new ConfigOptionInt(extruder_id));
+            int extruder_id = m_config.rotary_color_enabled.value ? m_config.rotary_color_filament.value - 1 : m_writer.filament()->id();
+            config.set_key_value("filament_extruder_id", new ConfigOptionInt(m_config.rotary_color_enabled.value ? int(get_extruder_id(extruder_id)) : extruder_id));
             config.set_key_value("current_filament_id", new ConfigOptionInt(extruder_id));
             config.set_key_value("current_extruder_id", new ConfigOptionInt((int) get_extruder_id(extruder_id)));
             config.set_key_value("current_nozzle_id", new ConfigOptionInt(nozzle_id_for_gcode_placeholder(group_result, extruder_id, (int) get_extruder_id(extruder_id), m_layer_index)));
@@ -4686,6 +4700,15 @@ void GCode::_print_first_layer_extruder_temperatures(GCodeOutputStream &file, Pr
     // Is the bed temperature set by the provided custom G-code?
     int  temp_by_gcode = -1;
     bool include_g10   = print.config().gcode_flavor == gcfRepRapFirmware;
+    if (m_config.rotary_color_enabled.value) {
+        if (!custom_gcode_sets_temperature(gcode, 104, 109, include_g10, temp_by_gcode)) {
+            const int parent = m_config.rotary_color_filament.value - 1;
+            const int temp = m_config.nozzle_temperature_initial_layer.get_at(get_filament_config_index(parent));
+            if (temp > 0)
+                file.write(GCodeWriter::set_temperature(temp, m_config.gcode_flavor.value, wait, int(get_extruder_id(parent))));
+        }
+        return;
+    }
     if (custom_gcode_sets_temperature(gcode, 104, 109, include_g10, temp_by_gcode)) {
         // Set the extruder temperature at m_writer, but throw away the generated G-code as it will be written with the custom G-code.
         int temp = print.config().nozzle_temperature_initial_layer.get_at(get_filament_config_index((int)first_printing_extruder_id));
@@ -9307,6 +9330,26 @@ void GCode::update_placeholder_parser_with_variant_params()
         this->placeholder_parser().set("flush_volumetric_speeds", new ConfigOptionFloats(flush_v_speed));
         this->placeholder_parser().set("flush_temperatures",      new ConfigOptionInts(flush_temps));
     }
+    if (m_config.rotary_color_enabled.value) {
+        // Legacy toolchanger scripts index material arrays by hardware tool.
+        // Every rotary appearance uses the same material, so extend those
+        // arrays when there are fewer painted colors than physical tools.
+        const size_t count = m_config.nozzle_diameter.size();
+        auto pad_material_array = [&](const std::string &key) {
+            const auto *value = dynamic_cast<const ConfigOptionVectorBase *>(placeholder_parser().config().option(key));
+            if (!value)
+                value = dynamic_cast<const ConfigOptionVectorBase *>(m_config.option(key));
+            if (!value || value->empty() || value->size() >= count)
+                return;
+            auto *copy = static_cast<ConfigOptionVectorBase *>(value->clone());
+            copy->resize(count, value);
+            placeholder_parser().set(key, copy);
+        };
+        for (const auto &key : Preset::filament_options())
+            pad_material_array(key);
+        for (const char *key : {"first_layer_temperature", "temperature", "retract_length"})
+            pad_material_array(key);
+    }
 }
 
 std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bool by_object, int toolchange_temp_override, bool defer_temp_wait)
@@ -9314,6 +9357,39 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
     int new_extruder_id = get_extruder_id(new_filament_id);
     if (!m_writer.need_toolchange(new_filament_id))
         return "";
+
+    if (m_config.rotary_color_enabled.value) {
+        const unsigned physical_filament = unsigned(m_config.rotary_color_filament.value - 1);
+        std::string gcode;
+        if (m_rotary_started && m_writer.needs_rotary_move(new_filament_id))
+            gcode += retract(false, false, LiftType::NormalLift, true);
+        m_wipe.reset_path();
+        if (by_object)
+            m_writer.add_object_change_labels(gcode);
+        gcode += m_writer.toolchange(new_filament_id, new_extruder_id);
+        m_writer.filament()->set_config_index(int(get_filament_config_index(new_filament_id)));
+        // Custom machine/material scripts refer to the physical spool. The
+        // ROTARY_COLOR tag carries the independent painted appearance identity.
+        placeholder_parser().set("current_extruder", new_extruder_id);
+        placeholder_parser().set("current_filament_id", int(physical_filament));
+        placeholder_parser().set("current_extruder_id", new_extruder_id);
+        placeholder_parser().set("current_nozzle_id",
+            nozzle_id_for_gcode_placeholder(m_print->get_layered_nozzle_group_result(), int(physical_filament), new_extruder_id, m_layer_index));
+        if (!m_rotary_started) {
+            DynamicConfig context;
+            context.set_key_value("layer_num", new ConfigOptionInt(m_layer_index));
+            context.set_key_value("layer_z", new ConfigOptionFloat(m_writer.get_position().z() - m_config.z_offset.value));
+            context.set_key_value("max_layer_z", new ConfigOptionFloat(m_max_layer_z));
+            context.set_key_value("filament_extruder_id", new ConfigOptionInt(new_extruder_id));
+            gcode += placeholder_parser_process("filament_start_gcode", m_config.filament_start_gcode.get_at(physical_filament),
+                                               physical_filament, &context);
+            check_add_eol(gcode);
+            if (m_config.enable_pressure_advance.get_at(physical_filament))
+                gcode += m_writer.set_pressure_advance(m_config.pressure_advance.get_at(physical_filament));
+            m_rotary_started = true;
+        }
+        return gcode;
+    }
 
     // if we are running a single-extruder setup, just set the extruder and return nothing
     if (!m_writer.multiple_extruders) {

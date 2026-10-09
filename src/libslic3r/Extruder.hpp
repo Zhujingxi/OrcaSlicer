@@ -67,6 +67,8 @@ public:
     void   set_position(double e) { m_E = e; }
     // Sets current retraction value & restart extra filament amount if retracted > 0.
     void   set_retracted(double retracted, double restart_extra);
+    // Virtual colors share E/retraction state, but retain separate usage counters.
+    void   copy_motion_state(const Extruder &source);
     
     double filament_diameter() const;
     double filament_crossection() const { return this->filament_diameter() * this->filament_diameter() * 0.25 * PI; }

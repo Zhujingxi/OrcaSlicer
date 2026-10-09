@@ -4125,6 +4125,29 @@ bool GCodeProcessor::get_last_position_from_gcode(const std::string &gcode_str, 
 
 void GCodeProcessor::process_tags(const std::string_view comment, bool producers_enabled)
 {
+    // A rotary color is an appearance change on the currently loaded spool.
+    // Close material accounting under the previous color, without tool-change
+    // timing, load/unload statistics, E resets or a physical tool-change marker.
+    constexpr std::string_view rotary_tag = "ROTARY_COLOR:";
+    if (boost::starts_with(comment, rotary_tag)) {
+        unsigned int id = 0;
+        if (!parse_number(comment.substr(rotary_tag.size()), id) || id >= m_result.filaments_count ||
+            id >= m_filament_maps.size() || id >= m_extruder_colors.size())
+            return;
+        const int extruder = m_filament_maps[id];
+        if (extruder < 0 || size_t(extruder) >= m_filament_id.size())
+            return;
+        if (get_filament_id(false) >= 0) {
+            m_used_filaments.process_model_cache(this);
+            m_used_filaments.process_support_cache(this);
+            m_used_filaments.process_total_volume_cache(this);
+        }
+        m_extruder_id = static_cast<unsigned char>(extruder);
+        m_filament_id[extruder] = static_cast<unsigned char>(id);
+        m_cp_color.current = m_extruder_colors[id];
+        return;
+    }
+
     // producers tags
     if (producers_enabled && process_producers_tags(comment))
         return;
@@ -7593,8 +7616,13 @@ void GCodeProcessor::update_slice_warnings()
         if (used_filaments[idx] < m_result.required_nozzle_HRC.size())
             filament_hrc = m_result.required_nozzle_HRC[used_filaments[idx]];
 
+        if (used_filaments[idx] >= m_filament_maps.size())
+            continue;
         int filament_extruder_id = m_filament_maps[used_filaments[idx]];
-        int extruder_hrc = nozzle_hrc_lists[filament_extruder_id];
+        // Exported files may omit nozzle types. Virtual colors still identify
+        // their physical tool, so use the configured hardness when its type is absent.
+        int extruder_hrc = filament_extruder_id >= 0 && size_t(filament_extruder_id) < nozzle_hrc_lists.size() ?
+            nozzle_hrc_lists[filament_extruder_id] : m_result.nozzle_hrc;
 
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": Check HRC: filament:%1%, hrc=%2%, extruder:%3%, hrc:%4%") % used_filaments[idx] % filament_hrc % filament_extruder_id % extruder_hrc;
 

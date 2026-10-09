@@ -2,6 +2,7 @@
 #include "Model.hpp"
 #include "Print.hpp"
 #include "FilamentMixer.hpp"
+#include "RotaryColor.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <cfloat>
@@ -1195,6 +1196,7 @@ static PrintObjectRegions* generate_print_object_regions(
 
 Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_config, bool extruder_applied)
 {
+    apply_rotary_color_config(new_full_config);
 #ifdef _DEBUG
     check_model_ids_validity(model);
 #endif /* _DEBUG */

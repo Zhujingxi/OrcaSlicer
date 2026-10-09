@@ -1684,6 +1684,10 @@ void MenuFactory::create_filament_action_menu(bool init, int active_filament_men
     append_submenu(menu, sub_menu, wxID_ANY, _L("Merge with"), "", "",
         [filaments_cnt]() { return filaments_cnt > 1; }, m_parent);
 
+    append_menu_item(menu, wxID_ANY, _L("Rotary color printing..."), "", [](wxCommandEvent&) {
+        plater()->sidebar().edit_rotary_colors();
+    }, "", nullptr, []() { return true; }, m_parent);
+
     // Decompose a target colour into a printable mix of the loaded filaments. Placed before the
     append_menu_item(
         menu, wxID_ANY, _L("Decompose Color"), "", [](wxCommandEvent&) {

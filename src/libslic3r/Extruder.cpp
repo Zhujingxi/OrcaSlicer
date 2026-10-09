@@ -36,6 +36,19 @@ unsigned int Extruder::extruder_id() const
     return 0;
 }
 
+void Extruder::copy_motion_state(const Extruder &source)
+{
+    const double e = source.E();
+    const double retracted = source.m_share_extruder ? source.m_share_retracted[source.extruder_id()] : source.m_retracted;
+    m_E = e;
+    m_retracted = retracted;
+    m_restart_extra = source.m_restart_extra;
+    if (m_share_extruder) {
+        m_share_E[extruder_id()] = e;
+        m_share_retracted[extruder_id()] = retracted;
+    }
+}
+
 double Extruder::extrude(double dE)
 {
     // BBS

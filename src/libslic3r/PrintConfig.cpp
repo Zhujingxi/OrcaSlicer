@@ -3264,6 +3264,34 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBools { false });
 
+    def = this->add("rotary_color_enabled", coBool);
+    def->label = L("Rotary color printing");
+    def->tooltip = L("Treat the project's filament colors as virtual appearances of one physical filament. Color changes emit absolute A-axis moves. The printer must implement the rotary coordinate transformation.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("rotary_color_filament", coInt);
+    def->label = L("Physical filament");
+    def->tooltip = L("The 1-based filament slot supplying the material settings and physical tool for all rotary colors.");
+    def->min = 1;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(1));
+
+    def = this->add("rotary_color_speed", coFloat);
+    def->label = L("Rotation speed");
+    def->tooltip = L("Requested A-axis speed in degrees per second. The printer enforces its motion limits.");
+    def->sidetext = L("degrees/s");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(30.));
+
+    def = this->add("filament_rotary_angle", coFloats);
+    def->label = L("Rotary angle");
+    def->tooltip = L("Absolute A-axis angle for this virtual filament color. Angles are sent directly to the printer without wrapping or XY compensation.");
+    def->sidetext = L("degrees");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloats{0.});
+
     // Mixed-color filament. A slot flagged here is virtual: it is not loaded into any
     // physical extruder, but resolved at slicing time into the physical filaments listed
     // in filament_mixed_components, blended either by splitting each layer into

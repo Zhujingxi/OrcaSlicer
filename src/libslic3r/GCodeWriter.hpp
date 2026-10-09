@@ -66,6 +66,7 @@ public:
     std::string enable_power_loss_recovery(PowerLossRecoveryMode mode);
     // return false if this extruder was already selected
     bool        need_toolchange(unsigned int filament_id) const;
+    bool        needs_rotary_move(unsigned int filament_id) const;
     std::string set_extruder(unsigned int filament_id);
     void init_extruder(unsigned int filament_id);
     // Current parked-retract length of a filament's extruder (share-aware). Used for the
@@ -146,6 +147,8 @@ public:
     int        m_curr_extruder_id;
     // Motion uses the global/base process variant until a filament becomes active.
     size_t     m_cached_extruder_idx;
+    bool       m_rotary_angle_initialized = false;
+    double     m_rotary_angle = 0.;
     unsigned int              m_last_acceleration;
     unsigned int              m_last_travel_acceleration;
     std::vector<unsigned int> m_max_travel_acceleration;

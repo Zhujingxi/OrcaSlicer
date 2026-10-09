@@ -1,5 +1,6 @@
 #include "GCodeWriter.hpp"
 #include "CustomGCode.hpp"
+#include "Exception.hpp"
 #include "I18N.hpp"
 #include "PrintConfig.hpp"
 #include "ClipperUtils.hpp"
@@ -187,11 +188,17 @@ bool GCodeWriter::spiral_lift_fits_printable_area(const Vec2d &center, double ra
 
 void GCodeWriter::set_extruders(std::vector<unsigned int> extruder_ids)
 {
+    if (config.rotary_color_enabled.value) {
+        extruder_ids.push_back(unsigned(config.rotary_color_filament.value - 1));
+        std::sort(extruder_ids.begin(), extruder_ids.end());
+        extruder_ids.erase(std::unique(extruder_ids.begin(), extruder_ids.end()), extruder_ids.end());
+    }
     std::sort(extruder_ids.begin(), extruder_ids.end());
     m_filament_extruders.clear();
     //ORCA: Reset current extruder ID and clear pointers to prevent dangling pointers when extruders are recreated.
     m_curr_extruder_id = -1;
     m_cached_extruder_idx = 0;
+    m_rotary_angle_initialized = false;
     std::fill(m_curr_filament_extruder.begin(), m_curr_filament_extruder.end(), nullptr);
     m_filament_extruders.reserve(extruder_ids.size());
     for (unsigned int extruder_id : extruder_ids)
@@ -686,12 +693,37 @@ std::string GCodeWriter::toolchange_prefix() const
 
 std::string GCodeWriter::toolchange(unsigned int filament_id, int nozzle_id)
 {
+    Extruder *previous = filament();
     // set the new extruder
     auto filament_extruder_iter = Slic3r::lower_bound_by_predicate(m_filament_extruders.begin(), m_filament_extruders.end(), [filament_id](const Extruder &e) { return e.id() < filament_id; });
     assert(filament_extruder_iter != m_filament_extruders.end() && filament_extruder_iter->id() == filament_id);
+    if (config.rotary_color_enabled.value && previous)
+        filament_extruder_iter->copy_motion_state(*previous);
     m_curr_extruder_id = filament_extruder_iter->extruder_id();
     m_curr_filament_extruder[m_curr_extruder_id] = &*filament_extruder_iter;
     m_cached_extruder_idx = get_extruder_index(this->config, filament_id);
+
+    if (config.rotary_color_enabled.value) {
+        const double angle = config.filament_rotary_angle.get_at(filament_id);
+        const double feed = config.rotary_color_speed.value * 60.;
+        if (!std::isfinite(angle) || !std::isfinite(feed) || feed <= 0. || std::round(feed * 1e9) == 0.)
+            throw SlicingError("Rotary angle and speed must be finite, with positive speed.");
+        std::ostringstream rotary;
+        rotary.imbue(std::locale::classic());
+        rotary << std::fixed << std::setprecision(9);
+        // Only the first selection selects hardware. Color switches must not
+        // issue physical tool changes or reset the shared extrusion position.
+        if (!m_rotary_angle_initialized)
+            rotary << "T" << m_curr_extruder_id << '\n';
+        rotary << ";ROTARY_COLOR:" << filament_id << '\n';
+        if (needs_rotary_move(filament_id)) {
+            rotary << "G1 A" << angle << " F" << feed << '\n';
+            rotary << "G1 F" << m_current_speed << '\n';
+            m_rotary_angle = angle;
+            m_rotary_angle_initialized = true;
+        }
+        return rotary.str();
+    }
 
     // return the toolchange command
     // if we are running a single-extruder setup, just set the extruder and return nothing
@@ -1387,7 +1419,15 @@ void GCodeWriter::init_extruder(unsigned int filament_id)
 
 bool GCodeWriter::need_toolchange(unsigned int filament_id)const
 {
+    if (config.rotary_color_enabled.value && !m_rotary_angle_initialized)
+        return true;
     return filament()==nullptr || filament()->id()!=filament_id;
+}
+
+bool GCodeWriter::needs_rotary_move(unsigned int filament_id) const
+{
+    return config.rotary_color_enabled.value &&
+           (!m_rotary_angle_initialized || config.filament_rotary_angle.get_at(filament_id) != m_rotary_angle);
 }
 
 void GCodeFormatter::emit_axis(const char axis, const double v, size_t digits) {

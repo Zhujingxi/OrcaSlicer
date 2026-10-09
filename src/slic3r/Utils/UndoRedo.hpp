@@ -52,6 +52,7 @@ enum class SnapshotType : unsigned char {
 // which may be handy sometimes.
 struct SnapshotData
 {
+    DynamicConfig rotary_color_config;
 	SnapshotType        snapshot_type;
 	PrinterTechnology 	printer_technology { ptUnknown };
 	// Bitmap of Flags (see the Flags enum).

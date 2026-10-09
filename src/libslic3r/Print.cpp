@@ -6,6 +6,7 @@
 #include "ClipperUtils.hpp"
 #include "Extruder.hpp"
 #include "FilamentMixer.hpp"
+#include "RotaryColor.hpp"
 #include "Flow.hpp"
 #include "Geometry/ConvexHull.hpp"
 #include "I18N.hpp"
@@ -105,6 +106,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
     // Cache the plenty of parameters, which influence the G-code generator only,
     // or they are only notes not influencing the generated G-code.
     static std::unordered_set<std::string> steps_gcode = {
+        "filament_rotary_angle",
+        "rotary_color_speed",
         //BBS
         "additional_cooling_fan_speed",
         "reduce_crossing_wall",
@@ -1306,6 +1309,8 @@ StringObjectException Print::check_multi_filament_valid(const Print& print)
 //BBS: refine seq-print validation logic
 StringObjectException Print::validate(std::vector<StringObjectException> *warnings, Polygons* collison_polygons, std::vector<std::pair<Polygon, float>>* height_polygons) const
 {
+    if (const auto error = validate_rotary_color_config(m_config); !error.empty())
+        return {error, nullptr, "rotary_color_enabled"};
     auto add_warning = [warnings](StringObjectException w) {
         w.is_warning = true;
         if (warnings != nullptr)
@@ -3978,6 +3983,8 @@ int Print::get_config_index(int filament_id, int layer_id, const std::vector<std
 // Wipe tower support.
 bool Print::has_wipe_tower() const
 {
+    if (m_config.rotary_color_enabled.value)
+        return false;
     if (m_config.enable_prime_tower.value == true) {
         if (m_config.enable_wrapping_detection.value && m_config.wrapping_exclude_area.values.size() > 2)
             return true;

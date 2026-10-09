@@ -32,6 +32,11 @@
 #include <boost/uuid/uuid_io.hpp>
 
 #include <wx/msgdlg.h>
+#include <wx/checkbox.h>
+#include "libslic3r/RotaryColor.hpp"
+#include <wx/choice.h>
+#include <wx/scrolwin.h>
+#include <wx/textctrl.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 #include <wx/button.h>
@@ -3061,6 +3066,13 @@ Sidebar::Sidebar(Plater *parent)
 
     wrapper_sizer->Add(p->m_panel_filament_content, 0, wxEXPAND);
 
+    // Toolchanger profiles and single-filament projects bypass the per-filament
+    // action menu, so keep the project-wide rotary settings directly accessible.
+    auto *rotary_color_btn = new Button(p->m_filament_area_wrapper, _L("Rotary color printing..."));
+    rotary_color_btn->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+    rotary_color_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { edit_rotary_colors(); });
+    wrapper_sizer->Add(rotary_color_btn, 0, wxEXPAND | wxALL, FromDIP(8));
+
     // ---- Mixed-color filament section ----
     // A mixed filament is a virtual slot realized from 2-3 physical filaments at slicing time.
     // Everything here stays hidden until at least two physical filaments exist, so a single
@@ -4746,6 +4758,101 @@ static bool create_mixed_filament_from_result(
     return true;
 }
 
+void Sidebar::edit_rotary_colors()
+{
+    auto &bundle = *wxGetApp().preset_bundle;
+    auto &config = bundle.project_config;
+    const auto &colors = config.option<ConfigOptionStrings>("filament_colour")->values;
+    if (colors.empty())
+        return;
+
+    wxDialog dialog(this, wxID_ANY, _L("Rotary color printing"), wxDefaultPosition, wxDefaultSize,
+                    wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
+    auto *layout = new wxBoxSizer(wxVERTICAL);
+    auto *description = new wxStaticText(&dialog, wxID_ANY,
+        _L("Each painted color selects an absolute A-axis angle of the same physical filament. "
+           "The printer handles rotary geometry and XY compensation. Add colors with the filament + button and paint normally."));
+    description->Wrap(FromDIP(460));
+    layout->Add(description, 0, wxEXPAND | wxALL, FromDIP(12));
+    auto *enabled = new wxCheckBox(&dialog, wxID_ANY, _L("Enable rotary color printing"));
+    enabled->SetValue(config.option<ConfigOptionBool>("rotary_color_enabled")->value);
+    layout->Add(enabled, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+
+    auto *settings = new wxFlexGridSizer(2, FromDIP(8), FromDIP(12));
+    settings->AddGrowableCol(1);
+    settings->Add(new wxStaticText(&dialog, wxID_ANY, _L("Physical filament")), 0, wxALIGN_CENTER_VERTICAL);
+    auto *parent = new wxChoice(&dialog, wxID_ANY);
+    for (size_t i = 0; i < colors.size(); ++i)
+        parent->Append(wxString::Format("%zu: ", i + 1) + from_u8(i < bundle.filament_presets.size() ? bundle.filament_presets[i] : colors[i]));
+    parent->SetSelection(std::clamp(config.option<ConfigOptionInt>("rotary_color_filament")->value - 1, 0, int(colors.size() - 1)));
+    parent->SetToolTip(_L("All colors inherit this filament's material settings and physical tool assignment."));
+    settings->Add(parent, 1, wxEXPAND);
+    settings->Add(new wxStaticText(&dialog, wxID_ANY, _L("Physical tool")), 0, wxALIGN_CENTER_VERTICAL);
+    auto *tool = new wxChoice(&dialog, wxID_ANY);
+    const size_t tool_count = std::max(size_t(1), bundle.printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter")->size());
+    for (size_t i = 0; i < tool_count; ++i)
+        tool->Append(wxString::Format("T%zu", i));
+    auto update_tool = [&] {
+        tool->SetSelection(std::clamp(config.option<ConfigOptionInts>("filament_map")->get_at(parent->GetSelection()) - 1, 0, int(tool_count - 1)));
+    };
+    update_tool();
+    parent->Bind(wxEVT_CHOICE, [&](wxCommandEvent &) { update_tool(); });
+    settings->Add(tool, 1, wxEXPAND);
+    settings->Add(new wxStaticText(&dialog, wxID_ANY, _L("Rotation speed (degrees/s)")), 0, wxALIGN_CENTER_VERTICAL);
+    auto *speed = new wxTextCtrl(&dialog, wxID_ANY, wxString::Format("%.9g", config.option<ConfigOptionFloat>("rotary_color_speed")->value));
+    settings->Add(speed, 1, wxEXPAND);
+    layout->Add(settings, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+
+    auto *scroll = new wxScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(460, 240)));
+    scroll->SetScrollRate(0, FromDIP(12));
+    auto *rows = new wxFlexGridSizer(2, FromDIP(8), FromDIP(12));
+    rows->AddGrowableCol(1);
+    std::vector<wxTextCtrl *> angles;
+    const auto &stored_angles = config.option<ConfigOptionFloats>("filament_rotary_angle")->values;
+    for (size_t i = 0; i < colors.size(); ++i) {
+        rows->Add(new wxStaticText(scroll, wxID_ANY, wxString::Format(_L("Color %d angle (degrees)"), int(i + 1))), 0, wxALIGN_CENTER_VERTICAL);
+        auto *angle = new wxTextCtrl(scroll, wxID_ANY, wxString::Format("%.9g", i < stored_angles.size() ? stored_angles[i] : 0.));
+        angle->SetToolTip(from_u8(colors[i]));
+        angles.push_back(angle);
+        rows->Add(angle, 1, wxEXPAND);
+    }
+    scroll->SetSizer(rows);
+    scroll->SetMinSize(FromDIP(wxSize(460, 240)));
+    scroll->FitInside();
+    layout->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    layout->Add(dialog.CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
+    dialog.SetSizerAndFit(layout);
+
+    dialog.Bind(wxEVT_BUTTON, [&](wxCommandEvent &) {
+        double rotation_speed = 0.;
+        std::vector<double> values;
+        if (!speed->GetValue().ToDouble(&rotation_speed) || !std::isfinite(rotation_speed) || rotation_speed <= 0.) {
+            wxMessageBox(_L("Rotation speed must be finite and greater than zero."), _L("Rotary color printing"), wxOK | wxICON_ERROR, &dialog);
+            return;
+        }
+        for (auto *field : angles) {
+            double value = 0.;
+            if (!field->GetValue().ToDouble(&value) || !std::isfinite(value)) {
+                wxMessageBox(_L("Each angle must be a finite number."), _L("Rotary color printing"), wxOK | wxICON_ERROR, &dialog);
+                field->SetFocus();
+                return;
+            }
+            values.push_back(value);
+        }
+        wxGetApp().plater()->take_snapshot("Rotary color settings");
+        config.option<ConfigOptionBool>("rotary_color_enabled")->value = enabled->GetValue();
+        config.option<ConfigOptionInt>("rotary_color_filament")->value = parent->GetSelection() + 1;
+        config.option<ConfigOptionInts>("filament_map")->values.at(parent->GetSelection()) = tool->GetSelection() + 1;
+        config.option<ConfigOptionFloat>("rotary_color_speed")->value = rotation_speed;
+        config.option<ConfigOptionFloats>("filament_rotary_angle")->values = std::move(values);
+        bundle.export_selections(*wxGetApp().app_config);
+        wxGetApp().plater()->update_project_dirty_from_presets();
+        wxPostEvent(this, SimpleEvent(EVT_SCHEDULE_BACKGROUND_PROCESS, this));
+        dialog.EndModal(wxID_OK);
+    }, wxID_OK);
+    dialog.ShowModal();
+}
+
 void Sidebar::add_mixed_filament()
 {
     auto* plater = dynamic_cast<Plater*>(GetParent());
@@ -5547,6 +5654,10 @@ void Sidebar::add_custom_filament(wxColour new_col, const std::string& preset_na
         rotate_ints("filament_map");
         rotate_ints("filament_nozzle_map");
         rotate_ints("filament_volume_map");
+        if (auto *angles = project_config.option<ConfigOptionFloats>("filament_rotary_angle"); angles && angles->values.size() > total)
+            std::rotate(angles->values.begin() + insert_pos, angles->values.begin() + total, angles->values.end());
+        if (auto *parent = project_config.option<ConfigOptionInt>("rotary_color_filament"); parent && parent->value >= int(insert_pos + 1))
+            ++parent->value;
         rotate_bools("filament_is_mixed");
         rotate_strings("filament_mixed_components");
         rotate_strings("filament_mixed_sublayer_ratios");
@@ -14213,6 +14324,8 @@ void Plater::priv::take_snapshot(const std::string& snapshot_name, const UndoRed
     UndoRedo::SnapshotData snapshot_data;
     snapshot_data.snapshot_type      = snapshot_type;
     snapshot_data.printer_technology = this->printer_technology;
+    snapshot_data.rotary_color_config = DynamicConfig(wxGetApp().preset_bundle->project_config, rotary_color_config_keys());
+    snapshot_data.rotary_color_config.set_key_value("filament_map", wxGetApp().preset_bundle->project_config.option("filament_map")->clone());
     if (this->view3D->is_layers_editing_enabled())
         snapshot_data.flags |= UndoRedo::SnapshotData::VARIABLE_LAYER_EDITING_ACTIVE;
     if (this->sidebar->obj_list()->is_selected(itSettings)) {
@@ -14364,6 +14477,8 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
     unsigned int new_flags = it_snapshot->snapshot_data.flags;
     UndoRedo::SnapshotData top_snapshot_data;
     top_snapshot_data.printer_technology = this->printer_technology;
+    top_snapshot_data.rotary_color_config = DynamicConfig(wxGetApp().preset_bundle->project_config, rotary_color_config_keys());
+    top_snapshot_data.rotary_color_config.set_key_value("filament_map", wxGetApp().preset_bundle->project_config.option("filament_map")->clone());
     if (this->view3D->is_layers_editing_enabled())
         top_snapshot_data.flags |= UndoRedo::SnapshotData::VARIABLE_LAYER_EDITING_ACTIVE;
     if (this->sidebar->obj_list()->is_selected(itSettings)) {
@@ -14408,6 +14523,8 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
             // This also switches the printer technology based on the printer technology of the active printer profile.
             wxGetApp().load_current_presets();
         }
+        wxGetApp().preset_bundle->project_config.apply(snapshot_copy.snapshot_data.rotary_color_config);
+        wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
         //FIXME updating the Print config from the Wipe tower config values at the ModelWipeTower.
         // This is a workaround until we refactor the Wipe Tower position / orientation to live solely inside the Model, not in the Print config.
         // BBS: add partplate logic

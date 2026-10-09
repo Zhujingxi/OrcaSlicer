@@ -1504,6 +1504,10 @@ PRINT_CONFIG_CLASS_DEFINE(
 PRINT_CONFIG_CLASS_DEFINE(
     GCodeConfig,
 
+    ((ConfigOptionBool,                rotary_color_enabled))
+    ((ConfigOptionInt,                 rotary_color_filament))
+    ((ConfigOptionFloat,               rotary_color_speed))
+    ((ConfigOptionFloats,              filament_rotary_angle))
     ((ConfigOptionString,              before_layer_change_gcode))
     ((ConfigOptionString,              printing_by_object_gcode))
     ((ConfigOptionFloats,              deretraction_speed))

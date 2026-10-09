@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include "PresetBundle.hpp"
+#include "RotaryColor.hpp"
 
 #include "PresetCacheFormat.hpp"
 #include "PrintConfig.hpp"
@@ -82,7 +83,11 @@ static std::vector<std::string> s_project_options {
     "filament_mixed_gradient",
     "filament_mixed_gradient_range",
     "filament_mixed_gradient_curve",
-    "filament_mixed_gradient_per_part"
+    "filament_mixed_gradient_per_part",
+    "rotary_color_enabled",
+    "rotary_color_filament",
+    "rotary_color_speed",
+    "filament_rotary_angle"
 };
 
 //Orca: add custom as default
@@ -2769,6 +2774,15 @@ static void load_mixed_filament_settings(DynamicPrintConfig &project_config, App
     load_strings("filament_mixed_gradient_range");
     load_bools("filament_mixed_gradient_per_part");
 
+    for (const auto &key : rotary_color_config_keys()) {
+        project_config.set_key_value(key, FullPrintConfig::defaults().option(key)->clone());
+        bool found = false;
+        const std::string value = raw_value(key.c_str(), found);
+        if (found && !project_config.option(key)->deserialize(value))
+            project_config.set_key_value(key, FullPrintConfig::defaults().option(key)->clone());
+    }
+    project_config.option<ConfigOptionFloats>("filament_rotary_angle")->values.resize(n_filaments, 0.);
+
     // The gradient curve is the one array whose values contain '|' themselves (it separates the
     // control points), so it is stored C-style escaped rather than '|'-joined.
     {
@@ -3182,6 +3196,9 @@ void PresetBundle::export_selections(AppConfig &config)
     if (auto *opt = project_config.option<ConfigOptionBools>("filament_mixed_gradient_per_part"))
         config.set_printer_setting(printer_name, "filament_mixed_gradient_per_part", join_bools(opt->values));
 
+    for (const auto &key : rotary_color_config_keys())
+        config.set_printer_setting(printer_name, key, project_config.option(key)->serialize());
+
     // BBS
     //config.set("presets", "sla_print",    sla_prints.get_selected_preset_name());
     //config.set("presets", "sla_material", sla_materials.get_selected_preset_name());
@@ -3220,6 +3237,7 @@ void PresetBundle::set_num_filaments(unsigned int n, std::string new_color)
     filament_map->values.resize(n, 1);
     filament_nozzle_map->values.resize(n, 0);
     filament_volume_map->values.resize(n, static_cast<int>(NozzleVolumeType::nvtStandard));
+    project_config.option<ConfigOptionFloats>("filament_rotary_angle")->values.resize(n, 0.);
     ams_multi_color_filment.resize(n);
 
     // Mixed-color metadata is a parallel per-filament array set, so it has to grow and shrink
@@ -3337,6 +3355,14 @@ void PresetBundle::update_num_filaments(unsigned int to_del_flament_id)
         erase_or_resize(opt->values);
     if (auto *opt = project_config.option<ConfigOptionBools>("filament_mixed_gradient_per_part"))
         erase_or_resize(opt->values);
+
+    erase_or_resize(project_config.option<ConfigOptionFloats>("filament_rotary_angle")->values);
+    auto &rotary_parent = project_config.option<ConfigOptionInt>("rotary_color_filament")->value;
+    if (rotary_parent == int(to_del_flament_id + 1)) {
+        project_config.option<ConfigOptionBool>("rotary_color_enabled")->value = false;
+        rotary_parent = 1;
+    } else if (rotary_parent > int(to_del_flament_id + 1))
+        --rotary_parent;
 
     update_multi_material_filament_presets(to_del_flament_id);
 }

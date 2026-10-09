@@ -23,6 +23,8 @@ option(USE_SLIC3R_CONSOLE_LOG "Enable console logging in RelWithDebInfo builds" 
 
 set(lisbslic3r_sources
     AABBMesh.cpp
+    RotaryColor.cpp
+    RotaryColor.hpp
     AABBMesh.hpp
     AABBTreeIndirect.hpp
     AABBTreeLines.hpp

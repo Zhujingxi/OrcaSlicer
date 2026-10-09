@@ -71,6 +71,7 @@ struct CoolingLine
         // ORCA: Add support for ironing fan speed control
         TYPE_IRONING_FAN_START         = 1 << 19,
         TYPE_IRONING_FAN_END           = 1 << 20,
+        TYPE_ROTARY                   = 1 << 21,
     };
 
     CoolingLine(unsigned int type, size_t  line_start, size_t  line_end) :
@@ -396,6 +397,8 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
 
                 assert(is_decimal_separator_point()); // for atof
                 //BBS: Parse the axis.
+                if (*c == 'A' && m_config.rotary_color_enabled.value)
+                    line.type |= CoolingLine::TYPE_ROTARY;
                 size_t axis = (*c >= 'X' && *c <= 'Z') ? (*c - 'X') :
                               (*c == 'E') ? 3 : (*c == 'F') ? 4 :
                               (*c == 'I') ? 5 : (*c == 'J') ? 6 : size_t(-1);
@@ -496,7 +499,7 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
         } else if (boost::starts_with(sline, ";_EXTRUDE_END")) {
             line.type = CoolingLine::TYPE_EXTRUDE_END;
             active_speed_modifier = size_t(-1);
-        } else if (boost::starts_with(sline, m_toolchange_prefix)) {
+        } else if (!m_config.rotary_color_enabled.value && boost::starts_with(sline, m_toolchange_prefix)) {
             unsigned int new_extruder = 0;
             auto ret = std::from_chars(sline.data() + m_toolchange_prefix.size(), sline.data() + sline.size(), new_extruder);
             if (std::errc::invalid_argument != ret.ec) {
@@ -940,6 +943,11 @@ std::string CoolingBuffer::apply_layer_cooldown(
         }
         else if (line->type & CoolingLine::TYPE_EXTRUDE_END) {
             // Just remove this comment.
+        } else if (line->type & CoolingLine::TYPE_ROTARY) {
+            // An A-only move has zero XYZ length but is real motion. Preserve
+            // its angular feed verbatim and force the next linear feed through.
+            new_gcode.append(line_start, line_end - line_start);
+            current_feedrate = -1;
         } else if (line->type & (CoolingLine::TYPE_ADJUSTABLE | CoolingLine::TYPE_EXTERNAL_PERIMETER | CoolingLine::TYPE_WIPE | CoolingLine::TYPE_HAS_F)) {
             // Find the start of a comment, or roll to the end of line.
             const char *end = line_start;
